@@ -8,12 +8,12 @@ const port = 3000;
 app.use(express.json());
 
 app.use(cors());
-
+require('dotenv').config();
 const connection = mysql.createConnection({
-  host: 'localhost',
-  user: 'root',
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
   password: '',
-  database: 'users' 
+  database: process.env.DB_DATABASE 
 });
 
 connection.connect((err) => {
@@ -94,13 +94,8 @@ app.post('/login', async (req, res) => { // 'res' here is the Express response o
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
+
 // Tasks
-// ... (your existing setup code: mysql, express, cors, app.use, connection setup) ...
-
-// --- Task Management Endpoints ---
-
-// Endpoint for adding a new task (POST /tasks)
-// This endpoint expects task_name, user_id, and optionally status in the request body
 app.post('/tasks', (req, res) => {
   const { task_name, user_id, status } = req.body; // These names match your DB columns
 
@@ -108,8 +103,6 @@ app.post('/tasks', (req, res) => {
     return res.status(400).json({ message: 'Task name and user ID are required.' });
   }
 
-  // SQL query to insert data into your 'tasks' table
-  // The 'status' column will use its default value if 'status' is not provided in the request body
   const sql = `INSERT INTO tasks (task_name, user_id, status) VALUES (?, ?, ?)`;
   
   connection.query(sql, [task_name, user_id, status], (err, result) => {
@@ -130,8 +123,8 @@ app.get('/tasks', (req, res) => {
   let sql = `SELECT * FROM tasks`; // Base query to get all tasks
   let params = []; // Array for SQL parameters
 
-  if (userId) { // If a user_id is provided in the query string
-    sql += ` WHERE user_id = ?`; // Add a WHERE clause to filter by user_id
+  if (userId) {
+    sql += ` WHERE user_id = ?`;
     params.push(userId); 
   }
 
@@ -144,6 +137,9 @@ app.get('/tasks', (req, res) => {
   });
 });
 
+app.delete('/tasks/:id', (req, res) => {
+
+})
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
