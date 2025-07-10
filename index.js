@@ -1,63 +1,67 @@
-const mysql = require('mysql');
 const express = require('express');
 const cors = require('cors');
+const mongoose = require('mongoose');
+require('dotenv').config();
 
-const app = express(); 
-const port = process.env.DB_PORT; 
+const app = express();
+const port = process.env.PORT || 3000;
 
 app.use(express.json());
-
 app.use(cors());
-require('dotenv').config();
-const connection = mysql.createConnection({
- host: process.env.DB_HOST, 
-    user: process.env.DB_USERNAME, 
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_DBNAME,
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
-  });
 
-connection.connect((err) => {
-  if (err) {
-    console.error('Error connecting to the database:', err);
-    return;
-  }
-  console.log('Connected to the database!');
-});
+const mongoURI = process.env.MONGODB_URI;
 
-// Auth
+mongoose.connect(mongoURI)
+  .then(() => console.log('Connected to MongoDB!'))
+  .catch(err => console.error('Error connecting to MongoDB:', err));
 
+const userSchema = new mongoose.Schema({
+  first_name: { type: String, required: true },
+  last_name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+}, { timestamps: true });
 
-// SignUp
+const User = mongoose.model('User', userSchema);
+
+const taskSchema = new mongoose.Schema({
+  task_name: { type: String, required: true },
+  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  status: { type: String, enum: ['pending', 'in_progress', 'completed'], default: 'pending' },
+}, { timestamps: true });
+
+const Task = mongoose.model('Task', taskSchema);
+
 app.post('/signup', async (req, res) => {
-  try{
-const { first_name, last_name, email, password } = req.body;
+  try {
+    const { first_name, last_name, email, password } = req.body;
 
-  if (!first_name || !last_name || !email || !password) {
-    return res.status(400).json({ message: 'All fields are required.' });
-  }
-
-  const sql = `INSERT INTO users (first_name, last_name, email, password) VALUES (?, ?, ?, ?)`;
-  connection.query(sql, [first_name, last_name, email, password], (err, result) => {
-    if (err) {
-      console.error('Error registering user:', err);
-      if (err.code === 'ER_DUP_ENTRY') {
-        return res.status(409).json({ message: 'Email already exists.' });
-      }
-      return res.status(500).json({ message: 'Error registering user.' });
+    if (!first_name || !last_name || !email || !password) {
+      return res.status(400).json({ message: 'All fields are required.' });
     }
-    res.status(201).json({ message: 'User registered successfully!', userId: result.insertId });
-  });}
-  catch(err) {
-    res.status(500).json({ message:'internal server Error'})
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ message: 'Email already exists.' });
+    }
+
+    const newUser = new User({
+      first_name,
+      last_name,
+      email,
+      password,
+    });
+
+    await newUser.save();
+
+    res.status(201).json({ message: 'User registered successfully!', userId: newUser._id });
+  } catch (err) {
+    console.error('Error in signup endpoint:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
-// Login
-
-app.post('/login', async (req, res) => { // 'res' here is the Express response object
+app.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -65,85 +69,126 @@ app.post('/login', async (req, res) => { // 'res' here is the Express response o
       return res.status(400).json({ message: 'Email and Password are Required.' });
     }
 
-    const sql = `SELECT * FROM users WHERE email = ? AND password = ?`;
-    connection.query(sql, [email, password], (err, rows) => { // <--- CORRECTED LINE
-      if (err) {
-        console.error('Error during login:', err);
-        return res.status(500).json({ message: 'An error occurred during login.' });
-      }
+    const user = await User.findOne({ email, password });
 
-      // 'rows' now correctly holds the query results
-      if (rows.length === 0) {
-        return res.status(401).json({ message: 'Invalid email or password.' });
-      }
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid email or password.' });
+    }
 
-      const user = rows[0]; // Accessing the first row of results
-      
-      // Using the Express 'res' object from the outer scope to send the response
-      res.status(200).json({
-        message: 'Login Succeeded!', // Corrected typo here, too
-        user: {
-          id: user.id,
-          first_name: user.first_name,
-          last_name: user.last_name,
-          email: user.email
-        }
-      });
+    res.status(200).json({
+      message: 'Login Succeeded!',
+      user: {
+        id: user._id,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        email: user.email,
+      },
     });
   } catch (err) {
-    // This catch block handles errors *before* the connection.query callback.
-    // E.g., if there's an issue with req.body parsing.
-    console.error('Unexpected error in login endpoint:', err); // Log the actual error
+    console.error('Error in login endpoint:', err);
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
 
-// Tasks
-app.post('/tasks', (req, res) => {
-  const { task_name, user_id, status } = req.body; // These names match your DB columns
+app.post('/tasks', async (req, res) => {
+  try {
+    const { task_name, user_id, status } = req.body;
 
-  if (!task_name || !user_id) {
-    return res.status(400).json({ message: 'Task name and user ID are required.' });
-  }
-
-  const sql = `INSERT INTO tasks (task_name, user_id, status) VALUES (?, ?, ?)`;
-  
-  connection.query(sql, [task_name, user_id, status], (err, result) => {
-    if (err) {
-      console.error('Error creating task:', err);
-      if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_ROW_IS_REFERENCED_2') {
-          return res.status(404).json({ message: 'User not found for this task. Invalid user_id.' });
-      }
-      return res.status(500).json({ message: 'An error occurred while creating the task.' });
+    if (!task_name || !user_id) {
+      return res.status(400).json({ message: 'Task name and user ID are required.' });
     }
-    res.status(201).json({ message: 'Task created successfully!', taskId: result.insertId });
-  });
+
+    const existingUser = await User.findById(user_id);
+    if (!existingUser) {
+      return res.status(404).json({ message: 'User not found. Invalid user_id.' });
+    }
+
+    const newTask = new Task({
+      task_name,
+      user_id,
+      status: status || 'pending',
+    });
+
+    await newTask.save();
+
+    res.status(201).json({ message: 'Task created successfully!', taskId: newTask._id });
+  } catch (err) {
+    console.error('Error creating task:', err);
+    res.status(500).json({ message: 'An error occurred while creating the task.' });
+  }
 });
 
-app.get('/tasks', (req, res) => {
-  const userId = req.query.user_id; // Retrieves user_id from the URL query string
+app.get('/tasks', async (req, res) => {
+  try {
+    const userId = req.query.user_id;
+    let tasks;
 
-  let sql = `SELECT * FROM tasks`; // Base query to get all tasks
-  let params = []; // Array for SQL parameters
-
-  if (userId) {
-    sql += ` WHERE user_id = ?`;
-    params.push(userId); 
-  }
-
-  connection.query(sql, params, (err, results) => {
-    if (err) {
-      console.error('Error fetching tasks:', err);
-      return res.status(500).json({ message: 'An error occurred while fetching tasks.' });
+    if (userId) {
+      tasks = await Task.find({ user_id: userId });
+    } else {
+      tasks = await Task.find({});
     }
-    res.status(200).json({ tasks: results }); // Send the fetched tasks back in the response
-  });
+
+    res.status(200).json({ tasks });
+  } catch (err) {
+    console.error('Error fetching tasks:', err);
+    res.status(500).json({ message: 'An error occurred while fetching tasks.' });
+  }
 });
 
-app.delete('/tasks/:id', (req, res) => {
+app.patch('/tasks/:id', async (req, res) => {
+  try {
+    const taskId = req.params.id;
+    const { status, user_id } = req.body;
 
-})
+    if (!status || !user_id) {
+      return res.status(400).json({ message: 'Status and user ID are required for update.' });
+    }
+
+    const validStatuses = ['pending', 'in_progress', 'completed'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ message: 'Invalid status value.' });
+    }
+
+    const updatedTask = await Task.findOneAndUpdate(
+      { _id: taskId, user_id: user_id },
+      { status: status },
+      { new: true }
+    );
+
+    if (!updatedTask) {
+      return res.status(404).json({ message: 'Task not found or you do not have permission to update this task.' });
+    }
+
+    res.status(200).json({ message: 'Task status updated successfully!', task: updatedTask });
+  } catch (err) {
+    console.error('Error updating task status:', err);
+    res.status(500).json({ message: 'An error occurred while updating the task status.' });
+  }
+});
+
+app.delete('/tasks/:id', async (req, res) => {
+  try {
+    const taskId = req.params.id;
+    const { user_id } = req.body;
+
+    if (!user_id) {
+      return res.status(400).json({ message: 'User ID is required to delete a task.' });
+    }
+
+    const deletedTask = await Task.findOneAndDelete({ _id: taskId, user_id: user_id });
+
+    if (!deletedTask) {
+      return res.status(404).json({ message: 'Task not found or you do not have permission to delete this task.' });
+    }
+
+    res.status(200).json({ message: 'Task deleted successfully!' });
+  } catch (err) {
+    console.error('Error deleting task:', err);
+    res.status(500).json({ message: 'An error occurred while deleting the task.' });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
-
